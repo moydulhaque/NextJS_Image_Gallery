@@ -2285,10 +2285,14 @@ export default abstract class Server<
 
     let isOnDemandRevalidate = false
     let revalidateOnlyGenerated = false
+    let isISRRevalidationRequest = false
 
     if (isSSG) {
-      ;({ isOnDemandRevalidate, revalidateOnlyGenerated } =
-        checkIsOnDemandRevalidate(req, this.renderOpts.previewProps))
+      ;({
+        isOnDemandRevalidate,
+        revalidateOnlyGenerated,
+        isISRRevalidationRequest,
+      } = checkIsOnDemandRevalidate(req, this.renderOpts.previewProps))
     }
 
     if (isSSG && this.minimalMode && req.headers[MATCHED_PATH_HEADER]) {
@@ -2484,6 +2488,7 @@ export default abstract class Server<
         },
         supportsDynamicResponse,
         isOnDemandRevalidate,
+        isISRRevalidationRequest,
         isDraftMode: isPreviewMode,
         isServerAction,
         isDevWarmup,
@@ -2535,6 +2540,7 @@ export default abstract class Server<
               incrementalCache,
               cacheLifeProfiles: this.nextConfig.experimental?.cacheLife,
               isRevalidate: isSSG,
+              isISRRevalidationRequest,
               waitUntil: this.getWaitUntil(),
               onClose: res.onClose.bind(res),
               onAfterTaskError: undefined,
