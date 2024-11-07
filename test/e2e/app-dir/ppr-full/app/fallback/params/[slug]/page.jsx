@@ -6,3 +6,7 @@ export default async function Page(props) {
 
   return <div data-slug={params.slug}>{params.slug}</div>
 }
+
+export async function generateStaticParams() {
+  return [{ slug: 'static-01' }]
+}
