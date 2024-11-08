@@ -105,10 +105,13 @@ export function createInitialRouterState({
       null,
   }
 
-  if (location) {
+  if (process.env.NODE_ENV !== 'development' && location) {
     // Seed the prefetch cache with this page's data.
     // This is to prevent needlessly re-prefetching a page that is already reusable,
     // and will avoid triggering a loading state/data fetch stall when navigating back to the page.
+    // We don't currently do this in development because links aren't prefetched in development
+    // so having a mismatch between prefetch/no prefetch provides inconsistent behavior based on which page
+    // was loaded first.
     const url = new URL(
       `${location.pathname}${location.search}`,
       location.origin
@@ -122,6 +125,13 @@ export function createInitialRouterState({
         couldBeIntercepted: !!couldBeIntercepted,
         prerendered,
         postponed,
+        // TODO: The initial RSC payload includes both static and dynamic data
+        // in the same response, even if PPR is enabled. So if there's any
+        // dynamic data at all, we can't set a stale time. In the future we may
+        // add a way to split a single Flight stream into static and dynamic
+        // parts. But in the meantime we should at least make this work for
+        // fully static pages.
+        staleTime: -1,
       },
       tree: initialState.tree,
       prefetchCache: initialState.prefetchCache,

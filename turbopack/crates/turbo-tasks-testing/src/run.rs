@@ -79,6 +79,7 @@ where
 
 fn closure_to_name<T>(value: &T) -> String {
     let name = std::any::type_name_of_val(value);
+    println!("Closure name: {}", name);
     name.replace("::{{closure}}", "").replace("::", "_")
 }
 
@@ -90,20 +91,64 @@ where
     F: Future<Output = Result<T>> + Send + 'static,
     T: Debug + PartialEq + Eq + TraceRawVcs + Send + 'static,
 {
+    let name = closure_to_name(&fut);
+    run_internal(registration, name, move |tt| run_once(tt, fut())).await
+}
+
+pub async fn run_with_tt<T, F>(
+    registration: &Registration,
+    fut: impl Fn(Arc<dyn TurboTasksApi>) -> F + Send + 'static,
+) -> Result<()>
+where
+    F: Future<Output = Result<T>> + Send + 'static,
+    T: Debug + PartialEq + Eq + TraceRawVcs + Send + 'static,
+{
+    let name = closure_to_name(&fut);
+    run_internal(registration, name, fut).await
+}
+
+pub async fn run_internal<T, F>(
+    registration: &Registration,
+    name: String,
+    fut: impl Fn(Arc<dyn TurboTasksApi>) -> F + Send + 'static,
+) -> Result<()>
+where
+    F: Future<Output = Result<T>> + Send + 'static,
+    T: Debug + PartialEq + Eq + TraceRawVcs + Send + 'static,
+{
     registration.ensure_registered();
 
-    let name = closure_to_name(&fut);
     let tt = registration.create_turbo_tasks(&name, true);
     println!("Run #1 (without cache)");
-    let first = run_once(tt.clone(), fut()).await?;
+    let start = std::time::Instant::now();
+    let first = fut(tt.clone()).await?;
+    println!("Run #1 took {:?}", start.elapsed());
     println!("Run #2 (with memory cache, same TurboTasks instance)");
-    let second = run_once(tt.clone(), fut()).await?;
+    let start = std::time::Instant::now();
+    let second = fut(tt.clone()).await?;
+    println!("Run #2 took {:?}", start.elapsed());
     assert_eq!(first, second);
+    let start = std::time::Instant::now();
     tt.stop_and_wait().await;
+    println!("Stopping TurboTasks took {:?}", start.elapsed());
+    // TODO enable that when turbo-tasks-memory is removed
+    // assert_eq!(Arc::strong_count(&tt), 1);
+    let start = std::time::Instant::now();
+    drop(tt);
+    println!("Dropping TurboTasks took {:?}", start.elapsed());
     let tt = registration.create_turbo_tasks(&name, false);
     println!("Run #3 (with persistent cache if available, new TurboTasks instance)");
-    let third = run_once(tt.clone(), fut()).await?;
+    let start = std::time::Instant::now();
+    let third = fut(tt.clone()).await?;
+    println!("Run #3 took {:?}", start.elapsed());
+    let start = std::time::Instant::now();
     tt.stop_and_wait().await;
+    println!("Stopping TurboTasks took {:?}", start.elapsed());
+    // TODO enable that when turbo-tasks-memory is removed
+    // assert_eq!(Arc::strong_count(&tt), 1);
+    let start = std::time::Instant::now();
+    drop(tt);
+    println!("Dropping TurboTasks took {:?}", start.elapsed());
     assert_eq!(first, third);
     Ok(())
 }

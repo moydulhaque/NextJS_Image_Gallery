@@ -2,8 +2,8 @@
 
 // @ts-ignore
 // eslint-disable-next-line import/no-extraneous-dependencies
-// import { createFromFetch } from 'react-server-dom-webpack/client'
-const { createFromFetch } = (
+// import { createFromReadableStream } from 'react-server-dom-webpack/client'
+const { createFromReadableStream } = (
   !!process.env.NEXT_RUNTIME
     ? // eslint-disable-next-line import/no-extraneous-dependencies
       require('react-server-dom-webpack/client.edge')
@@ -24,8 +24,10 @@ import {
   RSC_CONTENT_TYPE_HEADER,
   NEXT_HMR_REFRESH_HEADER,
   NEXT_DID_POSTPONE_HEADER,
+  NEXT_ROUTER_STALE_TIME_HEADER,
 } from '../app-router-headers'
 import { callServer } from '../../app-call-server'
+import { findSourceMapURL } from '../../app-find-source-map-url'
 import { PrefetchKind } from './router-reducer-types'
 import { hexHash } from '../../../shared/lib/hash'
 import {
@@ -47,6 +49,7 @@ export type FetchServerResponseResult = {
   couldBeIntercepted: boolean
   prerendered: boolean
   postponed: boolean
+  staleTime: number
 }
 
 function urlToUrlWithoutFlightMarker(url: string): URL {
@@ -73,6 +76,7 @@ function doMpaNavigation(url: string): FetchServerResponseResult {
     couldBeIntercepted: false,
     prerendered: false,
     postponed: false,
+    staleTime: -1,
   }
 }
 
@@ -176,6 +180,9 @@ export async function fetchServerResponse(
     const contentType = res.headers.get('content-type') || ''
     const interception = !!res.headers.get('vary')?.includes(NEXT_URL)
     const postponed = !!res.headers.get(NEXT_DID_POSTPONE_HEADER)
+    const staleTimeHeader = res.headers.get(NEXT_ROUTER_STALE_TIME_HEADER)
+    const staleTime =
+      staleTimeHeader !== null ? parseInt(staleTimeHeader, 10) : -1
     let isFlightResponse = contentType.startsWith(RSC_CONTENT_TYPE_HEADER)
 
     if (process.env.NODE_ENV === 'production') {
@@ -188,7 +195,7 @@ export async function fetchServerResponse(
 
     // If fetch returns something different than flight response handle it like a mpa navigation
     // If the fetch was not 200, we also handle it like a mpa navigation
-    if (!isFlightResponse || !res.ok) {
+    if (!isFlightResponse || !res.ok || !res.body) {
       // in case the original URL came with a hash, preserve it before redirecting to the new URL
       if (url.hash) {
         responseUrl.hash = url.hash
@@ -206,11 +213,12 @@ export async function fetchServerResponse(
     }
 
     // Handle the `fetch` readable stream that can be unwrapped by `React.use`.
-    const response: NavigationFlightResponse = await createFromFetch(
-      Promise.resolve(res),
-      {
-        callServer,
-      }
+    const flightStream = postponed
+      ? createUnclosingPrefetchStream(res.body)
+      : res.body
+    const response: NavigationFlightResponse = await createFromReadableStream(
+      flightStream,
+      { callServer, findSourceMapURL }
     )
 
     if (buildId !== response.b) {
@@ -223,6 +231,7 @@ export async function fetchServerResponse(
       couldBeIntercepted: interception,
       prerendered: response.S,
       postponed,
+      staleTime,
     }
   } catch (err) {
     console.error(
@@ -238,6 +247,40 @@ export async function fetchServerResponse(
       couldBeIntercepted: false,
       prerendered: false,
       postponed: false,
+      staleTime: -1,
     }
   }
+}
+
+function createUnclosingPrefetchStream(
+  originalFlightStream: ReadableStream<Uint8Array>
+): ReadableStream<Uint8Array> {
+  // When PPR is enabled, prefetch streams may contain references that never
+  // resolve, because that's how we encode dynamic data access. In the decoded
+  // object returned by the Flight client, these are reified into hanging
+  // promises that suspend during render, which is effectively what we want.
+  // The UI resolves when it switches to the dynamic data stream
+  // (via useDeferredValue(dynamic, static)).
+  //
+  // However, the Flight implementation currently errors if the server closes
+  // the response before all the references are resolved. As a cheat to work
+  // around this, we wrap the original stream in a new stream that never closes,
+  // and therefore doesn't error.
+  const reader = originalFlightStream.getReader()
+  return new ReadableStream({
+    async pull(controller) {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (!done) {
+          // Pass to the target stream and keep consuming the Flight response
+          // from the server.
+          controller.enqueue(value)
+          continue
+        }
+        // The server stream has closed. Exit, but intentionally do not close
+        // the target stream.
+        return
+      }
+    },
+  })
 }

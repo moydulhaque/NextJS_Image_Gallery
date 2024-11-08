@@ -15694,10 +15694,10 @@
       "runtimeError": false
     },
     "test/production/app-dir/actions-tree-shaking/client-actions-tree-shaking/client-actions-tree-shaking.test.ts": {
-      "passed": [],
-      "failed": [
+      "passed": [
         "app-dir - client-actions-tree-shaking should not bundle unused server reference id in client bundles"
       ],
+      "failed": [],
       "pending": [],
       "flakey": [],
       "runtimeError": false
@@ -16630,8 +16630,7 @@
       "passed": [],
       "failed": [
         "required server files app router middleware rewrite should work with a dynamic path",
-        "required server files app router middleware rewrite should work with a dynamic path (with Next-Resume)",
-        "required server files app router middleware rewrite should work with a dynamic path (without Next-Resume)",
+        "required server files app router middleware rewrite should work with a dynamic path with Next-Resume",
         "required server files app router should handle RSC requests",
         "required server files app router should handle prefetch RSC requests",
         "required server files app router should not fail caching",

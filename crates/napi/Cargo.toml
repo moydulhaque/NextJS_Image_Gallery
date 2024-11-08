@@ -105,12 +105,12 @@ lightningcss-napi = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 turbo-tasks = { workspace = true }
 turbo-tasks-memory = { workspace = true }
+turbo-tasks-backend = { workspace = true }
 turbo-tasks-fs = { workspace = true }
 next-api = { workspace = true }
 next-build = { workspace = true }
 next-core = { workspace = true }
 
-node-file-trace = { workspace = true, features = ["node-api"] }
 mdxjs = { workspace = true, features = ["serializable"] }
 
 turbo-tasks-malloc = { workspace = true, default-features = false, features = [

@@ -143,6 +143,9 @@ export function getDefineEnv({
   const nextPublicEnv = getNextPublicEnvironmentVariables()
   const nextConfigEnv = getNextConfigEnv(config)
 
+  const isPPREnabled = checkIsAppPPREnabled(config.experimental.ppr)
+  const isDynamicIOEnabled = !!config.experimental.dynamicIO
+
   const defineEnv: DefineEnv = {
     // internal field to identify the plugin config
     __NEXT_DEFINE_ENV: true,
@@ -183,8 +186,8 @@ export function getDefineEnv({
     'process.env.__NEXT_APP_ISR_INDICATOR': Boolean(
       config.devIndicators.appIsrStatus
     ),
-    'process.env.__NEXT_PPR': checkIsAppPPREnabled(config.experimental.ppr),
-    'process.env.__NEXT_DYNAMIC_IO': !!config.experimental.dynamicIO,
+    'process.env.__NEXT_PPR': isPPREnabled,
+    'process.env.__NEXT_DYNAMIC_IO': isDynamicIOEnabled,
     'process.env.__NEXT_AFTER': config.experimental.after ?? false,
     'process.env.NEXT_DEPLOYMENT_ID': config.deploymentId || false,
     'process.env.__NEXT_FETCH_CACHE_KEY_PREFIX': fetchCacheKeyPrefix ?? '',
@@ -266,6 +269,10 @@ export function getDefineEnv({
     'process.env.__NEXT_LINK_NO_TOUCH_START':
       config.experimental.linkNoTouchStart ?? false,
     'process.env.__NEXT_ASSET_PREFIX': config.assetPrefix,
+    'process.env.__NEXT_DISABLE_SYNC_DYNAMIC_API_WARNINGS':
+      // Internal only so untyped to avoid discovery
+      (config.experimental as any).internal_disableSyncDynamicAPIWarnings ??
+      false,
     ...(isNodeOrEdgeCompilation
       ? {
           // Fix bad-actors in the npm ecosystem (e.g. `node-formidable`)
