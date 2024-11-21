@@ -587,7 +587,7 @@
                 var JSCompiler_temp_const = info;
                 var error = ownerStack,
                   prevPrepareStackTrace = Error.prepareStackTrace;
-                Error.prepareStackTrace = void 0;
+                Error.prepareStackTrace = prepareStackTrace;
                 var stack = error.stack;
                 Error.prepareStackTrace = prevPrepareStackTrace;
                 stack.startsWith("Error: react-stack-top-frame\n") &&
@@ -2336,7 +2336,14 @@
         switch (value.$$typeof) {
           case REACT_ELEMENT_TYPE:
             null != value._owner && outlineComponentInfo(request, value._owner);
+            "object" === typeof value.type &&
+              null !== value.type &&
+              doNotLimit.add(value.type);
+            "object" === typeof value.key &&
+              null !== value.key &&
+              doNotLimit.add(value.key);
             doNotLimit.add(value.props);
+            null !== value._owner && doNotLimit.add(value._owner);
             counter = null;
             if (null != value._debugStack)
               for (
@@ -2484,8 +2491,7 @@
           : "unknown type " + typeof value;
     }
     function outlineConsoleValue(request, counter, model) {
-      "object" === typeof model && null !== model && doNotLimit.add(model);
-      var json = stringify(model, function (parentPropertyName, value) {
+      function replacer(parentPropertyName, value) {
         try {
           return renderConsoleValue(
             request,
@@ -2500,7 +2506,16 @@
             x.message
           );
         }
-      });
+      }
+      "object" === typeof model && null !== model && doNotLimit.add(model);
+      try {
+        var json = stringify(model, replacer);
+      } catch (x) {
+        json = stringify(
+          "Unknown Value: React could not send it from the server.\n" +
+            x.message
+        );
+      }
       request.pendingChunks++;
       model = request.nextChunkId++;
       json = model.toString(16) + ":" + json + "\n";
@@ -2516,12 +2531,7 @@
       stackTrace,
       args
     ) {
-      var counter = { objectLimit: 500 };
-      null != owner && outlineComponentInfo(request, owner);
-      var env = (0, request.environmentName)();
-      methodName = [methodName, stackTrace, owner, env];
-      methodName.push.apply(methodName, args);
-      args = stringify(methodName, function (parentPropertyName, value) {
+      function replacer(parentPropertyName, value) {
         try {
           return renderConsoleValue(
             request,
@@ -2536,8 +2546,28 @@
             x.message
           );
         }
-      });
-      id = serializeRowHeader("W", id) + args + "\n";
+      }
+      var counter = { objectLimit: 500 };
+      null != owner && outlineComponentInfo(request, owner);
+      var env = (0, request.environmentName)(),
+        payload = [methodName, stackTrace, owner, env];
+      payload.push.apply(payload, args);
+      try {
+        var json = stringify(payload, replacer);
+      } catch (x) {
+        json = stringify(
+          [
+            methodName,
+            stackTrace,
+            owner,
+            env,
+            "Unknown Value: React could not send it from the server.",
+            x
+          ],
+          replacer
+        );
+      }
+      id = serializeRowHeader("W", id) + json + "\n";
       id = stringToChunk(id);
       request.completedRegularChunks.push(id);
     }
@@ -3840,7 +3870,7 @@
       }
     };
     var frameRegExp =
-        /^ {3} at (?:(.+) \((.+):(\d+):(\d+)\)|(?:async )?(.+):(\d+):(\d+))$/,
+        /^ {3} at (?:(.+) \((?:(.+):(\d+):(\d+)|<anonymous>)\)|(?:async )?(.+):(\d+):(\d+)|<anonymous>)$/,
       supportsRequestStorage = "function" === typeof AsyncLocalStorage,
       requestStorage = supportsRequestStorage ? new AsyncLocalStorage() : null,
       supportsComponentStorage = supportsRequestStorage,

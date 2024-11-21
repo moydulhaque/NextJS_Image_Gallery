@@ -12,6 +12,7 @@ import {
   NEXT_CACHE_TAG_MAX_LENGTH,
 } from '../../lib/constants'
 import { markCurrentScopeAsDynamic } from '../app-render/dynamic-rendering'
+import { makeHangingPromise } from '../dynamic-rendering-utils'
 import type { FetchMetric } from '../base-http'
 import { createDedupeFetch } from './dedupe-fetch'
 import type {
@@ -185,6 +186,15 @@ export function createPatchedFetcher(
     const workStore = workAsyncStorage.getStore()
     const workUnitStore = workUnitAsyncStorage.getStore()
 
+    // During static generation we track cache reads so we can reason about when they fill
+    let cacheSignal =
+      workUnitStore && workUnitStore.type === 'prerender'
+        ? workUnitStore.cacheSignal
+        : null
+    if (cacheSignal) {
+      cacheSignal.beginRead()
+    }
+
     const result = getTracer().trace(
       isInternal ? NextNodeServerSpan.internalFetch : AppRenderSpan.fetch,
       {
@@ -244,17 +254,20 @@ export function createPatchedFetcher(
           `fetch ${input.toString()}`
         )
 
-        if (
+        const revalidateStore =
           workUnitStore &&
           (workUnitStore.type === 'cache' ||
             workUnitStore.type === 'prerender' ||
             workUnitStore.type === 'prerender-ppr' ||
             workUnitStore.type === 'prerender-legacy')
-        ) {
+            ? workUnitStore
+            : undefined
+
+        if (revalidateStore) {
           if (Array.isArray(tags)) {
             // Collect tags onto parent caches or parent prerenders.
             const collectedTags =
-              workUnitStore.tags ?? (workUnitStore.tags = [])
+              revalidateStore.tags ?? (revalidateStore.tags = [])
             for (const tag of tags) {
               if (!collectedTags.includes(tag)) {
                 collectedTags.push(tag)
@@ -268,11 +281,13 @@ export function createPatchedFetcher(
             ? []
             : workUnitStore.implicitTags
 
-        // Inside unstable-cache we treat it the same as force-no-store on the page.
+        // Inside unstable-cache we treat it the same as force-no-store on the
+        // page.
         const pageFetchCacheMode =
           workUnitStore && workUnitStore.type === 'unstable-cache'
             ? 'force-no-store'
             : workStore.fetchCache
+
         const isUsingNoStore = !!workStore.isUnstableNoStore
 
         let currentFetchCacheConfig = getRequestMeta('cache')
@@ -283,27 +298,55 @@ export function createPatchedFetcher(
           typeof currentFetchCacheConfig === 'string' &&
           typeof currentFetchRevalidate !== 'undefined'
         ) {
-          // when providing fetch with a Request input, it'll automatically set a cache value of 'default'
-          // we only want to warn if the user is explicitly setting a cache value
-          if (!(isRequestInput && currentFetchCacheConfig === 'default')) {
+          // If the revalidate value conflicts with the cache value, we should warn the user and unset the conflicting values.
+          const isConflictingRevalidate =
+            // revalidate: 0 and cache: force-cache
+            (currentFetchCacheConfig === 'force-cache' &&
+              currentFetchRevalidate === 0) ||
+            // revalidate: >0 or revalidate: false and cache: no-store
+            (currentFetchCacheConfig === 'no-store' &&
+              (currentFetchRevalidate > 0 || currentFetchRevalidate === false))
+
+          if (isConflictingRevalidate) {
             cacheWarning = `Specified "cache: ${currentFetchCacheConfig}" and "revalidate: ${currentFetchRevalidate}", only one should be specified.`
+            currentFetchCacheConfig = undefined
+            currentFetchRevalidate = undefined
           }
-          currentFetchCacheConfig = undefined
         }
 
-        if (currentFetchCacheConfig === 'force-cache') {
-          currentFetchRevalidate = false
-        } else if (
+        const hasExplicitFetchCacheOptOut =
+          // fetch config itself signals not to cache
           currentFetchCacheConfig === 'no-cache' ||
           currentFetchCacheConfig === 'no-store' ||
+          // the fetch isn't explicitly caching and the segment level cache config signals not to cache
+          // note: `pageFetchCacheMode` is also set by being in an unstable_cache context.
           pageFetchCacheMode === 'force-no-store' ||
-          pageFetchCacheMode === 'only-no-store' ||
-          // If no explicit fetch cache mode is set, but dynamic = `force-dynamic` is set,
-          // we shouldn't consider caching the fetch. This is because the `dynamic` cache
-          // is considered a "top-level" cache mode, whereas something like `fetchCache` is more
-          // fine-grained. Top-level modes are responsible for setting reasonable defaults for the
-          // other configurations.
-          (!pageFetchCacheMode && workStore.forceDynamic)
+          pageFetchCacheMode === 'only-no-store'
+
+        // If no explicit fetch cache mode is set, but dynamic = `force-dynamic` is set,
+        // we shouldn't consider caching the fetch. This is because the `dynamic` cache
+        // is considered a "top-level" cache mode, whereas something like `fetchCache` is more
+        // fine-grained. Top-level modes are responsible for setting reasonable defaults for the
+        // other configurations.
+        const noFetchConfigAndForceDynamic =
+          !pageFetchCacheMode &&
+          !currentFetchCacheConfig &&
+          !currentFetchRevalidate &&
+          workStore.forceDynamic
+
+        if (
+          // force-cache was specified without a revalidate value. We set the revalidate value to false
+          // which will signal the cache to not revalidate
+          currentFetchCacheConfig === 'force-cache' &&
+          typeof currentFetchRevalidate === 'undefined'
+        ) {
+          currentFetchRevalidate = false
+        } else if (
+          // if we are inside of "use cache"/"unstable_cache"
+          // we shouldn't set the revalidate to 0 as it's overridden
+          // by the cache context
+          workUnitStore?.type !== 'cache' &&
+          (hasExplicitFetchCacheOptOut || noFetchConfigAndForceDynamic)
         ) {
           currentFetchRevalidate = 0
         }
@@ -332,15 +375,6 @@ export function createPatchedFetcher(
         const isUnCacheableMethod = !['get', 'head'].includes(
           getRequestMeta('method')?.toLowerCase() || 'get'
         )
-
-        const revalidateStore =
-          workUnitStore &&
-          (workUnitStore.type === 'cache' ||
-            workUnitStore.type === 'prerender' ||
-            workUnitStore.type === 'prerender-ppr' ||
-            workUnitStore.type === 'prerender-legacy')
-            ? workUnitStore
-            : undefined
 
         /**
          * We automatically disable fetch caching under the following conditions:
@@ -372,6 +406,23 @@ export function createPatchedFetcher(
           ((hasUnCacheableHeader || isUnCacheableMethod) &&
             revalidateStore &&
             revalidateStore.revalidate === 0)
+
+        if (
+          hasNoExplicitCacheConfig &&
+          workUnitStore !== undefined &&
+          workUnitStore.type === 'prerender'
+        ) {
+          // If we have no cache config, and we're in Dynamic I/O prerendering, it'll be a dynamic call.
+          // We don't have to issue that dynamic call.
+          if (cacheSignal) {
+            cacheSignal.endRead()
+            cacheSignal = null
+          }
+          return makeHangingPromise<Response>(
+            workUnitStore.renderSignal,
+            'fetch()'
+          )
+        }
 
         switch (pageFetchCacheMode) {
           case 'force-no-store': {
@@ -454,14 +505,27 @@ export function createPatchedFetcher(
           // If we were setting the revalidate value to 0, we should try to
           // postpone instead first.
           if (finalRevalidate === 0) {
-            markCurrentScopeAsDynamic(
-              workStore,
-              workUnitStore,
-              `revalidate: 0 fetch ${input} ${workStore.route}`
-            )
+            if (workUnitStore && workUnitStore.type === 'prerender') {
+              if (cacheSignal) {
+                cacheSignal.endRead()
+                cacheSignal = null
+              }
+              return makeHangingPromise<Response>(
+                workUnitStore.renderSignal,
+                'fetch()'
+              )
+            } else {
+              markCurrentScopeAsDynamic(
+                workStore,
+                workUnitStore,
+                `revalidate: 0 fetch ${input} ${workStore.route}`
+              )
+            }
           }
 
-          if (revalidateStore) {
+          // We only want to set the revalidate store's revalidate time if it
+          // was explicitly set for the fetch call, i.e. currentFetchRevalidate.
+          if (revalidateStore && currentFetchRevalidate === finalRevalidate) {
             revalidateStore.revalidate = finalRevalidate
           }
         }
@@ -576,7 +640,6 @@ export function createPatchedFetcher(
               if (workUnitStore && workUnitStore.type === 'prerender') {
                 // We are prerendering at build time or revalidate time with dynamicIO so we need to
                 // buffer the response so we can guarantee it can be read in a microtask
-
                 const bodyBuffer = await res.arrayBuffer()
 
                 const fetchedData = {
@@ -614,7 +677,7 @@ export function createPatchedFetcher(
                 })
               } else {
                 // We are dynamically rendering including dev mode. We want to return
-                // the response to the caller as soon  as possible because it might stream
+                // the response to the caller as soon as possible because it might stream
                 // over a very long time.
                 res
                   .clone()
@@ -778,11 +841,22 @@ export function createPatchedFetcher(
 
           if (cache === 'no-store') {
             // If enabled, we should bail out of static generation.
-            markCurrentScopeAsDynamic(
-              workStore,
-              workUnitStore,
-              `no-store fetch ${input} ${workStore.route}`
-            )
+            if (workUnitStore && workUnitStore.type === 'prerender') {
+              if (cacheSignal) {
+                cacheSignal.endRead()
+                cacheSignal = null
+              }
+              return makeHangingPromise<Response>(
+                workUnitStore.renderSignal,
+                'fetch()'
+              )
+            } else {
+              markCurrentScopeAsDynamic(
+                workStore,
+                workUnitStore,
+                `no-store fetch ${input} ${workStore.route}`
+              )
+            }
           }
 
           const hasNextConfig = 'next' in init
@@ -794,11 +868,18 @@ export function createPatchedFetcher(
           ) {
             if (next.revalidate === 0) {
               // If enabled, we should bail out of static generation.
-              markCurrentScopeAsDynamic(
-                workStore,
-                workUnitStore,
-                `revalidate: 0 fetch ${input} ${workStore.route}`
-              )
+              if (workUnitStore && workUnitStore.type === 'prerender') {
+                return makeHangingPromise<Response>(
+                  workUnitStore.renderSignal,
+                  'fetch()'
+                )
+              } else {
+                markCurrentScopeAsDynamic(
+                  workStore,
+                  workUnitStore,
+                  `revalidate: 0 fetch ${input} ${workStore.route}`
+                )
+              }
             }
 
             if (!workStore.forceStatic || next.revalidate !== 0) {
@@ -879,22 +960,16 @@ export function createPatchedFetcher(
       }
     )
 
-    if (
-      workUnitStore &&
-      workUnitStore.type === 'prerender' &&
-      workUnitStore.cacheSignal
-    ) {
-      // During static generation we track cache reads so we can reason about when they fill
-      const cacheSignal = workUnitStore.cacheSignal
-      cacheSignal.beginRead()
+    if (cacheSignal) {
       try {
         return await result
       } finally {
-        cacheSignal.endRead()
+        if (cacheSignal) {
+          cacheSignal.endRead()
+        }
       }
-    } else {
-      return result
     }
+    return result
   }
 
   // Attach the necessary properties to the patched fetch function.

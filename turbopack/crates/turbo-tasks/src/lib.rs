@@ -43,6 +43,7 @@ mod completion;
 pub mod debug;
 mod display;
 pub mod duration_span;
+mod effect;
 pub mod event;
 pub mod graph;
 mod id;
@@ -61,11 +62,11 @@ mod output;
 pub mod persisted_graph;
 pub mod primitives;
 mod raw_vc;
-mod rcstr;
 mod read_ref;
 pub mod registry;
 mod scope;
 mod serialization_invalidation;
+mod shrink_to_fit;
 pub mod small_duration;
 mod state;
 pub mod task;
@@ -85,6 +86,7 @@ use auto_hash_map::AutoSet;
 pub use collectibles::CollectiblesSource;
 pub use completion::{Completion, Completions};
 pub use display::ValueToString;
+pub use effect::{apply_effects, effect, get_effects, Effects};
 pub use id::{
     ExecutionId, FunctionId, LocalTaskId, SessionId, TaskId, TraitTypeId, ValueTypeId,
     TRANSIENT_TASK_BIT,
@@ -110,6 +112,7 @@ pub use read_ref::ReadRef;
 use rustc_hash::FxHasher;
 pub use scope::scope;
 pub use serialization_invalidation::SerializationInvalidator;
+pub use shrink_to_fit::ShrinkToFit;
 pub use state::{State, TransientState};
 pub use task::{task_input::TaskInput, SharedReference, TypedSharedReference};
 pub use trait_ref::{IntoTraitRef, TraitRef};
@@ -122,7 +125,44 @@ pub use vc::{
     VcValueTraitCast, VcValueType, VcValueTypeCast,
 };
 
-pub use crate::rcstr::RcStr;
+pub type FxIndexSet<T> = indexmap::IndexSet<T, BuildHasherDefault<FxHasher>>;
+pub type FxIndexMap<K, V> = indexmap::IndexMap<K, V, BuildHasherDefault<FxHasher>>;
+
+// Copied from indexmap! and indexset!
+#[macro_export]
+macro_rules! fxindexmap {
+    (@single $($x:tt)*) => (());
+    (@count $($rest:expr),*) => (<[()]>::len(&[$($crate::fxindexmap!(@single $rest)),*]));
+
+    ($($key:expr => $value:expr,)+) => { $crate::fxindexmap!($($key => $value),+) };
+    ($($key:expr => $value:expr),*) => {
+        {
+            let _cap = $crate::fxindexmap!(@count $($key),*);
+            let mut _map = $crate::FxIndexMap::with_capacity_and_hasher(_cap, Default::default());
+            $(
+                _map.insert($key, $value);
+            )*
+            _map
+        }
+    };
+}
+#[macro_export]
+macro_rules! fxindexset {
+    (@single $($x:tt)*) => (());
+    (@count $($rest:expr),*) => (<[()]>::len(&[$($crate::fxindexset!(@single $rest)),*]));
+
+    ($($value:expr,)+) => { $crate::fxindexset!($($value),+) };
+    ($($value:expr),*) => {
+        {
+            let _cap = $crate::fxindexset!(@count $($value),*);
+            let mut _set = $crate::FxIndexSet::with_capacity_and_hasher(_cap, Default::default());
+            $(
+                _set.insert($value);
+            )*
+            _set
+        }
+    };
+}
 
 /// Implements [`VcValueType`] for the given `struct` or `enum`. These value types can be used
 /// inside of a "value cell" as [`Vc<...>`][Vc].

@@ -192,12 +192,17 @@ describe('app dir - navigation', () => {
       await checkLink('top', 0)
       await checkLink('non-existent', 0)
 
-      // there should have been no RSC calls to fetch data
-      expect(hasRscRequest).toBe(false)
+      if (!isNextDev) {
+        // there should have been no RSC calls to fetch data
+        // this is skipped in development because there'll never be a prefetch cache
+        // entry for the loaded page and so every request will be a cache miss.
+        expect(hasRscRequest).toBe(false)
+      }
 
-      // There should be an RSC request if the query param is changed
       await checkLink('query-param', 2284)
       await browser.waitForIdleNetwork()
+
+      // There should be an RSC request if the query param is changed
       expect(hasRscRequest).toBe(true)
     })
 
@@ -969,4 +974,27 @@ describe('app dir - navigation', () => {
       )
     })
   })
+
+  if (isNextDev) {
+    describe('locale warnings', () => {
+      it('should warn about using the `locale` prop with `next/link` in app router', async () => {
+        const browser = await next.browser('/locale-app')
+        const logs = await browser.log()
+        expect(logs).toContainEqual(
+          expect.objectContaining({
+            message: expect.stringContaining(
+              'The `locale` prop is not supported in `next/link` while using the `app` router.'
+            ),
+            source: 'warning',
+          })
+        )
+      })
+
+      it('should have no warnings in pages router', async () => {
+        const browser = await next.browser('/locale-pages')
+        const logs = await browser.log()
+        expect(logs.filter((log) => log.source === 'warning')).toHaveLength(0)
+      })
+    })
+  }
 })

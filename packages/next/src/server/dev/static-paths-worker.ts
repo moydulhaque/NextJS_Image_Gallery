@@ -46,9 +46,10 @@ export async function loadStaticPaths({
   maxMemoryCacheSize,
   requestHeaders,
   cacheHandler,
+  cacheLifeProfiles,
   nextConfigOutput,
-  isAppPPRFallbacksEnabled,
   buildId,
+  authInterrupts,
 }: {
   dir: string
   distDir: string
@@ -64,9 +65,12 @@ export async function loadStaticPaths({
   maxMemoryCacheSize?: number
   requestHeaders: IncrementalCache['requestHeaders']
   cacheHandler?: string
+  cacheLifeProfiles?: {
+    [profile: string]: import('../../server/use-cache/cache-life').CacheLife
+  }
   nextConfigOutput: 'standalone' | 'export' | undefined
-  isAppPPRFallbacksEnabled: boolean | undefined
   buildId: string
+  authInterrupts: boolean
 }): Promise<PartialStaticPathsResult> {
   // update work memory runtime-config
   require('../../shared/lib/runtime-config.external').setConfig(config)
@@ -97,14 +101,15 @@ export async function loadStaticPaths({
       distDir,
       requestHeaders,
       cacheHandler,
+      cacheLifeProfiles,
       isrFlushToDisk,
       fetchCacheKeyPrefix,
       maxMemoryCacheSize,
       ComponentMod: components.ComponentMod,
       nextConfigOutput,
       isRoutePPREnabled,
-      isAppPPRFallbacksEnabled,
       buildId,
+      authInterrupts,
     })
   } else if (!components.getStaticPaths) {
     // We shouldn't get to this point since the worker should only be called for

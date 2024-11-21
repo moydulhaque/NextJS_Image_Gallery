@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
-use indexmap::IndexSet;
-use turbo_tasks::{RcStr, ValueToString, Vc};
+use turbo_rcstr::RcStr;
+use turbo_tasks::{FxIndexSet, ValueToString, Vc};
 use turbo_tasks_fs::File;
 
 use crate::{
@@ -83,7 +83,7 @@ impl Introspectable for SourceMapAsset {
 
     #[turbo_tasks::function]
     async fn children(&self) -> Result<Vc<IntrospectableChildren>> {
-        let mut children = IndexSet::new();
+        let mut children = FxIndexSet::default();
         if let Some(asset) = Vc::try_resolve_sidecast::<Box<dyn Introspectable>>(self.asset).await?
         {
             children.insert((Vc::cell("asset".into()), asset));

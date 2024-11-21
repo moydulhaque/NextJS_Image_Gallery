@@ -75,7 +75,7 @@ import { denormalizePagePath } from '../shared/lib/page-path/denormalize-page-pa
 import { normalizePagePath } from '../shared/lib/page-path/normalize-page-path'
 import { getRuntimeContext } from '../server/web/sandbox'
 import { isClientReference } from '../lib/client-reference'
-import { withWorkStore } from '../server/async-storage/with-work-store'
+import { createWorkStore } from '../server/async-storage/work-store'
 import type { CacheHandler } from '../server/lib/incremental-cache'
 import { IncrementalCache } from '../server/lib/incremental-cache'
 import { nodeFs } from '../server/lib/node-fs-methods'
@@ -99,6 +99,7 @@ import type { OutgoingHttpHeaders } from 'http'
 import type { AppSegmentConfig } from './segment-config/app/app-segment-config'
 import type { AppSegment } from './segment-config/app/app-segments'
 import { collectSegments } from './segment-config/app/app-segments'
+import { createIncrementalCache } from '../export/helpers/create-incremental-cache'
 
 export type ROUTER_TYPE = 'pages' | 'app'
 
@@ -317,11 +318,11 @@ export async function computeFromManifest(
   return lastCompute!
 }
 
-export function isMiddlewareFilename(file?: string) {
+export function isMiddlewareFilename(file?: string | null) {
   return file === MIDDLEWARE_FILENAME || file === `src/${MIDDLEWARE_FILENAME}`
 }
 
-export function isInstrumentationHookFilename(file?: string) {
+export function isInstrumentationHookFilename(file?: string | null) {
   return (
     file === INSTRUMENTATION_HOOK_FILENAME ||
     file === `src/${INSTRUMENTATION_HOOK_FILENAME}`
@@ -745,6 +746,8 @@ export async function printTreeView(
     })
   )
 
+  const staticFunctionInfo =
+    lists.app && stats.router.app ? 'generateStaticParams' : 'getStaticProps'
   print()
   print(
     textTable(
@@ -757,13 +760,13 @@ export async function printTreeView(
         usedSymbols.has('●') && [
           '●',
           '(SSG)',
-          `prerendered as static HTML (uses ${cyan('getStaticProps')})`,
+          `prerendered as static HTML (uses ${cyan(staticFunctionInfo)})`,
         ],
         usedSymbols.has('ISR') && [
           '',
           '(ISR)',
           `incremental static regeneration (uses revalidate in ${cyan(
-            'getStaticProps'
+            staticFunctionInfo
           )})`,
         ],
         usedSymbols.has('◐') && [
@@ -1211,34 +1214,38 @@ export async function buildAppStaticPaths({
   page,
   distDir,
   dynamicIO,
+  authInterrupts,
   configFileName,
   segments,
   isrFlushToDisk,
   cacheHandler,
+  cacheLifeProfiles,
   requestHeaders,
   maxMemoryCacheSize,
   fetchCacheKeyPrefix,
   nextConfigOutput,
   ComponentMod,
   isRoutePPREnabled,
-  isAppPPRFallbacksEnabled,
   buildId,
 }: {
   dir: string
   page: string
   dynamicIO: boolean
+  authInterrupts: boolean
   configFileName: string
   segments: AppSegment[]
   distDir: string
   isrFlushToDisk?: boolean
   fetchCacheKeyPrefix?: string
   cacheHandler?: string
+  cacheLifeProfiles?: {
+    [profile: string]: import('../server/use-cache/cache-life').CacheLife
+  }
   maxMemoryCacheSize?: number
   requestHeaders: IncrementalCache['requestHeaders']
   nextConfigOutput: 'standalone' | 'export' | undefined
   ComponentMod: AppPageModule
   isRoutePPREnabled: boolean | undefined
-  isAppPPRFallbacksEnabled: boolean | undefined
   buildId: string
 }): Promise<PartialStaticPathsResult> {
   if (
@@ -1294,25 +1301,28 @@ export async function buildAppStaticPaths({
     }
   }
 
-  const routeParams = await withWorkStore(
-    ComponentMod.workAsyncStorage,
-    {
-      page,
-      // We're discovering the parameters here, so we don't have any unknown
-      // ones.
-      fallbackRouteParams: null,
-      renderOpts: {
-        incrementalCache,
-        supportsDynamicResponse: true,
-        isRevalidate: false,
-        experimental: {
-          after: false,
-          dynamicIO,
-        },
-        buildId,
+  const store = createWorkStore({
+    page,
+    // We're discovering the parameters here, so we don't have any unknown
+    // ones.
+    fallbackRouteParams: null,
+    renderOpts: {
+      incrementalCache,
+      cacheLifeProfiles,
+      supportsDynamicResponse: true,
+      isRevalidate: false,
+      experimental: {
+        after: false,
+        dynamicIO,
+        authInterrupts,
       },
+      buildId,
     },
-    async (store) => {
+  })
+
+  const routeParams = await ComponentMod.workAsyncStorage.run(
+    store,
+    async () => {
       async function builtRouteParams(
         parentsParams: Params[] = [],
         idx = 0
@@ -1403,7 +1413,7 @@ export async function buildAppStaticPaths({
       }))
 
   // TODO: dynamic params should be allowed to be granular per segment but
-  // we need  additional information stored/leveraged in the prerender
+  // we need additional information stored/leveraged in the prerender
   // manifest to allow this behavior.
   const dynamicParams = segments.every(
     (segment) => segment.config?.dynamicParams !== false
@@ -1412,11 +1422,9 @@ export async function buildAppStaticPaths({
   const supportsRoutePreGeneration =
     hadAllParamsGenerated || process.env.NODE_ENV === 'production'
 
-  const supportsPPRFallbacks = isRoutePPREnabled && isAppPPRFallbacksEnabled
-
   const fallbackMode = dynamicParams
     ? supportsRoutePreGeneration
-      ? supportsPPRFallbacks
+      ? isRoutePPREnabled
         ? FallbackMode.PRERENDER
         : FallbackMode.BLOCKING_STATIC_RENDER
       : undefined
@@ -1441,7 +1449,7 @@ export async function buildAppStaticPaths({
 
   // If the fallback mode is a prerender, we want to include the dynamic
   // route in the prerendered routes too.
-  if (isRoutePPREnabled && isAppPPRFallbacksEnabled) {
+  if (isRoutePPREnabled) {
     result.prerenderedRoutes ??= []
     result.prerenderedRoutes.unshift({
       path: page,
@@ -1482,19 +1490,22 @@ export async function isPageStatic({
   edgeInfo,
   pageType,
   dynamicIO,
+  authInterrupts,
   originalAppPath,
   isrFlushToDisk,
   maxMemoryCacheSize,
   nextConfigOutput,
   cacheHandler,
+  cacheHandlers,
+  cacheLifeProfiles,
   pprConfig,
-  isAppPPRFallbacksEnabled,
   buildId,
 }: {
   dir: string
   page: string
   distDir: string
   dynamicIO: boolean
+  authInterrupts: boolean
   configFileName: string
   runtimeEnvConfig: any
   httpAgentOptions: NextConfigComplete['httpAgentOptions']
@@ -1508,11 +1519,24 @@ export async function isPageStatic({
   isrFlushToDisk?: boolean
   maxMemoryCacheSize?: number
   cacheHandler?: string
+  cacheHandlers?: Record<string, string | undefined>
+  cacheLifeProfiles?: {
+    [profile: string]: import('../server/use-cache/cache-life').CacheLife
+  }
   nextConfigOutput: 'standalone' | 'export' | undefined
   pprConfig: ExperimentalPPRConfig | undefined
-  isAppPPRFallbacksEnabled: boolean | undefined
   buildId: string
 }): Promise<PageIsStaticResult> {
+  await createIncrementalCache({
+    cacheHandler,
+    cacheHandlers,
+    distDir,
+    dir,
+    dynamicIO,
+    flushToDisk: isrFlushToDisk,
+    cacheMaxMemorySize: maxMemoryCacheSize,
+  })
+
   const isPageStaticSpan = trace('is-page-static-utils', parentId)
   return isPageStaticSpan
     .traceAsyncFn(async (): Promise<PageIsStaticResult> => {
@@ -1623,6 +1647,7 @@ export async function isPageStatic({
               dir,
               page,
               dynamicIO,
+              authInterrupts,
               configFileName,
               segments,
               distDir,
@@ -1630,10 +1655,10 @@ export async function isPageStatic({
               isrFlushToDisk,
               maxMemoryCacheSize,
               cacheHandler,
+              cacheLifeProfiles,
               ComponentMod,
               nextConfigOutput,
               isRoutePPREnabled,
-              isAppPPRFallbacksEnabled,
               buildId,
             }))
         }

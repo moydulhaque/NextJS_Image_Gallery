@@ -67,6 +67,8 @@ type ViewportResolver = (
   parent: ResolvingViewport
 ) => Viewport | Promise<Viewport>
 
+export type MetadataErrorType = 'not-found' | 'forbidden' | 'unauthorized'
+
 export type MetadataItems = [
   Metadata | MetadataResolver | null,
   StaticMetadata,
@@ -425,7 +427,7 @@ async function collectMetadata({
   errorMetadataItem: MetadataItems[number]
   props: any
   route: string
-  errorConvention?: 'not-found'
+  errorConvention?: MetadataErrorType
 }) {
   let mod
   let modType
@@ -477,7 +479,7 @@ export { cachedResolveMetadataItems as resolveMetadataItems }
 async function resolveMetadataItems(
   tree: LoaderTree,
   searchParams: Promise<ParsedUrlQuery>,
-  errorConvention: 'not-found' | undefined,
+  errorConvention: MetadataErrorType | undefined,
   getDynamicParamFromSegment: GetDynamicParamFromSegment,
   createServerParamsForMetadata: CreateServerParamsForMetadata,
   workStore: WorkStore
@@ -507,7 +509,7 @@ async function resolveMetadataItemsImpl(
   treePrefix: undefined | string[],
   parentParams: Params,
   searchParams: Promise<ParsedUrlQuery>,
-  errorConvention: 'not-found' | undefined,
+  errorConvention: MetadataErrorType | undefined,
   errorMetadataItem: MetadataItems[number],
   getDynamicParamFromSegment: GetDynamicParamFromSegment,
   createServerParamsForMetadata: CreateServerParamsForMetadata,
@@ -603,6 +605,7 @@ function inheritFromMetadata(
   }
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const commonOgKeys = ['title', 'description', 'images'] as const
 function postProcessMetadata(
   metadata: ResolvedMetadata,

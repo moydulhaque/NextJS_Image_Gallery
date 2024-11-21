@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { useCallback, useEffect, startTransition, useMemo, useRef } from 'react'
 import stripAnsi from 'next/dist/compiled/strip-ansi'
 import formatWebpackMessages from '../internal/helpers/format-webpack-messages'
-import { usePathname, useRouter } from '../../navigation'
+import { useRouter } from '../../navigation'
 import {
   ACTION_BEFORE_REFRESH,
   ACTION_BUILD_ERROR,
@@ -36,6 +36,8 @@ import { extractModulesFromTurbopackMessage } from '../../../../server/dev/extra
 import { REACT_REFRESH_FULL_RELOAD_FROM_ERROR } from '../shared'
 import type { HydrationErrorState } from '../internal/helpers/hydration-error-info'
 import type { DebugInfo } from '../types'
+import { useUntrackedPathname } from '../../navigation-untracked'
+import { getReactStitchedError } from '../internal/helpers/stitched-error'
 
 export interface Dispatcher {
   onBuildOk(): void
@@ -469,7 +471,6 @@ function processMessage(
         reloading = true
         return window.location.reload()
       }
-      resolvePendingHotUpdateWebpack()
       startTransition(() => {
         router.hmrRefresh()
         dispatcher.onRefresh()
@@ -562,10 +563,12 @@ export default function HotReload({
       const componentStackTrace =
         (error as any)._componentStack || errorDetails?.componentStack
       const warning = errorDetails?.warning
+      const stitchedError = getReactStitchedError(error)
+
       dispatch({
         type: ACTION_UNHANDLED_ERROR,
-        reason: error,
-        frames: parseStack(error.stack!),
+        reason: stitchedError,
+        frames: parseStack(stitchedError.stack || ''),
         componentStackFrames:
           typeof componentStackTrace === 'string'
             ? parseComponentStack(componentStackTrace)
@@ -575,19 +578,18 @@ export default function HotReload({
     },
     [dispatch]
   )
+
   const handleOnUnhandledRejection = useCallback(
     (reason: Error): void => {
+      const stitchedError = getReactStitchedError(reason)
       dispatch({
         type: ACTION_UNHANDLED_REJECTION,
-        reason: reason,
-        frames: parseStack(reason.stack!),
+        reason: stitchedError,
+        frames: parseStack(stitchedError.stack || ''),
       })
     },
     [dispatch]
   )
-  const handleOnReactError = useCallback(() => {
-    RuntimeErrorHandler.hadRuntimeError = true
-  }, [])
   useErrorHandler(handleOnUnhandledError, handleOnUnhandledRejection)
 
   const webSocketRef = useWebsocket(assetPrefix)
@@ -598,7 +600,10 @@ export default function HotReload({
   )
 
   const router = useRouter()
-  const pathname = usePathname()
+
+  // We don't want access of the pathname for the dev tools to trigger a dynamic
+  // access (as the dev overlay will never be present in production).
+  const pathname = useUntrackedPathname()
   const appIsrManifestRef = useRef<Record<string, false | number>>({})
   const pathnameRef = useRef(pathname)
 
@@ -612,18 +617,33 @@ export default function HotReload({
       const appIsrManifest = appIsrManifestRef.current
 
       if (appIsrManifest) {
-        if (pathname in appIsrManifest) {
-          const indicatorHiddenAt = Number(
-            localStorage?.getItem('__NEXT_DISMISS_PRERENDER_INDICATOR')
-          )
+        if (pathname && pathname in appIsrManifest) {
+          try {
+            const indicatorHiddenAt = Number(
+              localStorage?.getItem('__NEXT_DISMISS_PRERENDER_INDICATOR')
+            )
 
-          const isHidden =
-            indicatorHiddenAt &&
-            !isNaN(indicatorHiddenAt) &&
-            Date.now() < indicatorHiddenAt
+            const isHidden =
+              indicatorHiddenAt &&
+              !isNaN(indicatorHiddenAt) &&
+              Date.now() < indicatorHiddenAt
 
-          if (!isHidden) {
-            dispatcher.onStaticIndicator(true)
+            if (!isHidden) {
+              dispatcher.onStaticIndicator(true)
+            }
+          } catch (reason) {
+            let message = ''
+
+            if (reason instanceof DOMException) {
+              // Most likely a SecurityError, because of an unavailable localStorage
+              message = reason.stack ?? reason.message
+            } else if (reason instanceof Error) {
+              message = 'Error: ' + reason.message + '\n' + (reason.stack ?? '')
+            } else {
+              message = 'Unexpected Exception: ' + reason
+            }
+
+            console.warn('[HMR] ' + message)
           }
         } else {
           dispatcher.onStaticIndicator(false)
@@ -670,11 +690,7 @@ export default function HotReload({
   ])
 
   return (
-    <ReactDevOverlay
-      onReactError={handleOnReactError}
-      state={state}
-      dispatcher={dispatcher}
-    >
+    <ReactDevOverlay state={state} dispatcher={dispatcher}>
       {children}
     </ReactDevOverlay>
   )
