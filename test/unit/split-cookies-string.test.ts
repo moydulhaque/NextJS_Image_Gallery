@@ -1,12 +1,12 @@
-import type { CookieSerializeOptions } from 'cookie'
+import type { SerializeOptions } from 'next/dist/compiled/cookie'
 import { splitCookiesString } from 'next/dist/server/web/utils'
-import cookie from 'next/dist/compiled/cookie'
+import { serialize } from 'next/dist/compiled/cookie'
 
 function generateCookies(
-  ...cookieOptions: (CookieSerializeOptions & { name: string; value: string })[]
+  ...cookieOptions: (SerializeOptions & { name: string; value: string })[]
 ) {
   const cookies = cookieOptions.map((opts) =>
-    cookie.serialize(opts.name, opts.value, opts)
+    serialize(opts.name, opts.value, opts)
   )
   return {
     joined: cookies.join(', '),
@@ -61,7 +61,7 @@ describe('splitCookiesString', () => {
         value: 'bar',
         expires: new Date(Date.now() + 10 * 1000),
         maxAge: 10,
-        domain: 'https://foo.bar',
+        domain: 'foo.bar',
         httpOnly: true,
         path: '/path',
         sameSite: 'lax',
@@ -146,7 +146,7 @@ describe('splitCookiesString', () => {
           value: 'bar',
           expires: new Date(Date.now() + 10 * 1000),
           maxAge: 10,
-          domain: 'https://foo.bar',
+          domain: 'foo.bar',
           httpOnly: true,
           path: '/path',
           sameSite: 'lax',
@@ -157,7 +157,7 @@ describe('splitCookiesString', () => {
           value: 'y',
           expires: new Date(Date.now() + 20 * 1000),
           maxAge: 20,
-          domain: 'https://x.y',
+          domain: 'x.y',
           httpOnly: true,
           path: '/path',
           sameSite: 'strict',
