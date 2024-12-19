@@ -39,7 +39,7 @@ describe('app-dir - server source maps', () => {
           '\n    at logError (app/rsc-error-log/page.js:4:16)' +
           (isTurbopack
             ? '\n    at Page (app/rsc-error-log/page.js:11:2)'
-            : // TODO(veil): Method name should be "Page"
+            : // TODO(NDX-531): Method name should be "Page"
               '\n    at logError (app/rsc-error-log/page.js:11:2)') +
           '\n  2 |' +
           '\n  3 | function logError() {' +
@@ -111,7 +111,7 @@ describe('app-dir - server source maps', () => {
               "Module not found: Can't resolve 'internal-pkg'"
             : '\nError: Boom' +
                 '\n    at logError (app/ssr-error-log-ignore-listed/page.js:8:16)' +
-                // TODO(veil): Method name should be "runWithExternalSourceMapped"
+                // TODO(NDX-531): Method name should be "runWithExternalSourceMapped"
                 '\n    at logError (app/ssr-error-log-ignore-listed/page.js:17:10)' +
                 '\n    at runWithExternal (app/ssr-error-log-ignore-listed/page.js:16:32)' +
                 '\n    at runWithInternalSourceMapped (app/ssr-error-log-ignore-listed/page.js:15:18)' +
@@ -146,7 +146,7 @@ describe('app-dir - server source maps', () => {
               "Module not found: Can't resolve 'internal-pkg'"
             : '\nError: Boom' +
                 '\n    at logError (app/rsc-error-log-ignore-listed/page.js:8:16)' +
-                // TODO(veil): Method name should be "runWithExternalSourceMapped"
+                // TODO(NDX-531): Method name should be "runWithExternalSourceMapped"
                 '\n    at logError (app/rsc-error-log-ignore-listed/page.js:19:10)' +
                 '\n    at runWithExternal (app/rsc-error-log-ignore-listed/page.js:18:32)' +
                 '\n    at runWithInternalSourceMapped (app/rsc-error-log-ignore-listed/page.js:17:18)' +
@@ -163,7 +163,7 @@ describe('app-dir - server source maps', () => {
 
   it('thrown SSR errors', async () => {
     const outputIndex = next.cliOutput.length
-    await next.render('/ssr-throw')
+    const browser = await next.browser('/ssr-throw')
 
     if (isNextDev) {
       await retry(() => {
@@ -186,7 +186,7 @@ describe('app-dir - server source maps', () => {
               "\n  digest: '"
           : '\n ⨯ Error: Boom' +
               '\n    at throwError (app/ssr-throw/Thrower.js:4:8)' +
-              // TODO(veil): Method name should be "Thrower"
+              // TODO(NDX-531): Method name should be "Thrower"
               '\n    at throwError (app/ssr-throw/Thrower.js:8:2)' +
               '\n  2 |' +
               '\n  3 | function throwError() {' +
@@ -198,6 +198,36 @@ describe('app-dir - server source maps', () => {
               "\n  digest: '"
       )
       expect(cliOutput).toMatch(/digest: '\d+'/)
+
+      if (isTurbopack) {
+        await expect(browser).toDisplayRedbox(`
+         {
+           "count": 1,
+           "description": "Error: Boom",
+           "source": "app/ssr-throw/Thrower.js (4:9) @ throwError
+         > 4 |   throw new Error('Boom')
+             |         ^",
+           "stack": [
+             "Thrower app/ssr-throw/Thrower.js (8:3)",
+           ],
+           "title": "Unhandled Runtime Error",
+         }
+        `)
+      } else {
+        await expect(browser).toDisplayRedbox(`
+         {
+           "count": 1,
+           "description": "Error: Boom",
+           "source": "app/ssr-throw/Thrower.js (4:9) @ throwError
+         > 4 |   throw new Error('Boom')
+             |         ^",
+           "stack": [
+             "throwError app/ssr-throw/Thrower.js (8:3)",
+           ],
+           "title": "Unhandled Runtime Error",
+         }
+        `)
+      }
     } else {
       // TODO: Test `next build` with `--enable-source-maps`.
     }
