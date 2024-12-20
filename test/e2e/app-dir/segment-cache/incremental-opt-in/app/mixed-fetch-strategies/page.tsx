@@ -12,12 +12,29 @@ export default function MixedFetchStrategies() {
       </p>
       <ul>
         <li>
-          <LinkAccordion href="/mixed-fetch-strategies/has-loading-boundary/shared-layout/ppr-enabled">
+          <LinkAccordion
+            id="ppr-enabled"
+            href="/mixed-fetch-strategies/has-loading-boundary/a/b/shared-layout/ppr-enabled"
+          >
             Link to PPR enabled page
           </LinkAccordion>
+          <ul>
+            <li>
+              <LinkAccordion
+                id="ppr-enabled-prefetch-true"
+                prefetch={true}
+                href="/mixed-fetch-strategies/has-loading-boundary/a/b/shared-layout/ppr-enabled"
+              >
+                Same link, but with prefetch=true
+              </LinkAccordion>
+            </li>
+          </ul>
         </li>
         <li>
-          <LinkAccordion href="/mixed-fetch-strategies/has-loading-boundary/shared-layout/ppr-disabled">
+          <LinkAccordion
+            id="ppr-disabled"
+            href="/mixed-fetch-strategies/has-loading-boundary/a/b/shared-layout/ppr-disabled"
+          >
             Link to PPR disabled page
           </LinkAccordion>
         </li>

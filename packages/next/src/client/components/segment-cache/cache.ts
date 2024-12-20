@@ -147,6 +147,7 @@ export type RouteCacheEntry =
 
 export const enum FetchStrategy {
   PPR,
+  Full,
   LoadingBoundary,
 }
 
@@ -537,6 +538,15 @@ function clearRevalidatingSegmentFromOwner(owner: SegmentCacheEntry): void {
     cancelEntryListeners(revalidatingSegment)
     owner.revalidating = null
   }
+}
+
+export function resetRevalidatingSegmentEntry(
+  owner: SegmentCacheEntry
+): EmptySegmentCacheEntry {
+  clearRevalidatingSegmentFromOwner(owner)
+  const emptyEntry = createDetachedSegmentCacheEntry(owner.staleAt)
+  owner.revalidating = emptyEntry
+  return emptyEntry
 }
 
 function onRouteLRUEviction(entry: RouteCacheEntry): void {
@@ -995,7 +1005,7 @@ export async function fetchSegmentOnCacheMiss(
   }
 }
 
-export async function fetchSegmentPrefetchesForPPRDisabledRoute(
+export async function fetchSegmentPrefetchesUsingDynamicRequest(
   task: PrefetchTask,
   route: FulfilledRouteCacheEntry,
   dynamicRequestTree: FlightRouterState,
@@ -1005,13 +1015,18 @@ export async function fetchSegmentPrefetchesForPPRDisabledRoute(
   const nextUrl = task.key.nextUrl
   const headers: RequestHeaders = {
     [RSC_HEADER]: '1',
-    [NEXT_ROUTER_PREFETCH_HEADER]: '1',
     [NEXT_ROUTER_STATE_TREE_HEADER]: encodeURIComponent(
       JSON.stringify(dynamicRequestTree)
     ),
   }
   if (nextUrl !== null) {
     headers[NEXT_URL] = nextUrl
+  }
+  if (!task.includeDynamicData) {
+    // Although this is a dynamic request, the server should not include
+    // dynamic data in the response. This happens when PPR is disabled — we
+    // prefetch up to the nearest loading boundary.
+    headers[NEXT_ROUTER_PREFETCH_HEADER] = '1'
   }
   try {
     const response = await fetchPrefetchResponse(href, headers)

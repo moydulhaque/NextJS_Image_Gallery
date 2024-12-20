@@ -5,7 +5,7 @@ export const experimental_ppr = true
 
 async function Content() {
   await connection()
-  return <div id="page-content">Page content</div>
+  return <div id="page-content">Dynamic page content</div>
 }
 
 export default async function Page() {
