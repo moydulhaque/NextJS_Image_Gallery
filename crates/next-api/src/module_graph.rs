@@ -18,7 +18,7 @@ use next_core::{
 };
 use petgraph::{
     graph::{DiGraph, NodeIndex},
-    visit::{Dfs, VisitMap, Visitable},
+    visit::{Dfs, EdgeRef, VisitMap, Visitable},
 };
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
@@ -30,12 +30,17 @@ use turbo_tasks::{
     CollectiblesSource, FxIndexMap, FxIndexSet, NonLocalValue, ReadRef, ResolvedVc,
     TryFlatJoinIterExt, TryJoinIterExt, ValueToString, Vc,
 };
+use turbo_tasks_hash::hash_xxh3_hash64;
 use turbopack_core::{
-    chunk::ChunkingType,
+    chunk::{module_id_strategies::GlobalModuleIdStrategy, ChunkingType},
     context::AssetContext,
     issue::{Issue, IssueExt},
     module::{Module, Modules},
     reference::primary_chunkable_referenced_modules,
+};
+use turbopack_ecmascript::{
+    async_chunk::module::async_loader_modifier,
+    global_module_id_strategy::merge_preprocessed_module_ids,
 };
 
 use crate::{
@@ -126,6 +131,7 @@ enum SingleModuleGraphBuilderNode {
         source_ident: ReadRef<RcStr>,
         target: ResolvedVc<Box<dyn Module>>,
         target_ident: ReadRef<RcStr>,
+        target_layer: Option<ReadRef<RcStr>>,
     },
     Module {
         module: ResolvedVc<Box<dyn Module>>,
@@ -154,12 +160,17 @@ impl SingleModuleGraphBuilderNode {
         target: ResolvedVc<Box<dyn Module>>,
         chunking_type: ChunkingType,
     ) -> Result<Self> {
+        let target_ident = target.ident();
         Ok(Self::ChunkableReference {
             chunking_type,
             source,
             source_ident: source.ident().to_string().await?,
             target,
-            target_ident: target.ident().to_string().await?,
+            target_ident: target_ident.to_string().await?,
+            target_layer: match target_ident.await?.layer {
+                Some(layer) => Some(layer.await?),
+                None => None,
+            },
         })
     }
 }
@@ -292,6 +303,8 @@ impl SingleModuleGraph {
             .await?;
 
         let children_nodes_iter = AdjacencyMap::new()
+            // TODO we might want to change this to skip via SingleModuleGraphBuilder::visit
+            // instead, to better handle visited_nodes (and at least revisit that single edge).
             .skip_duplicates_with_visited_nodes(VisitedNodes(
                 visited_modules
                     .iter()
@@ -310,17 +323,19 @@ impl SingleModuleGraph {
         {
             let _span = tracing::info_span!("build module graph").entered();
             for (parent, current) in children_nodes_iter.into_breadth_first_edges() {
-                let parent_edge = parent.map(|parent| match parent {
-                    SingleModuleGraphBuilderNode::Module { module, .. } => {
-                        (*modules.get(&module).unwrap(), COMMON_CHUNKING_TYPE)
+                let parent = if let Some(parent) = parent {
+                    match parent {
+                        SingleModuleGraphBuilderNode::Module { module, .. } => {
+                            Some(*modules.get(&module).unwrap())
+                        }
+                        // was already handled in the previous iteration
+                        SingleModuleGraphBuilderNode::ChunkableReference { .. } => continue,
+                        // should never have children anyway
+                        SingleModuleGraphBuilderNode::Issues { .. } => unreachable!(),
                     }
-                    SingleModuleGraphBuilderNode::ChunkableReference {
-                        source,
-                        chunking_type,
-                        ..
-                    } => (*modules.get(&source).unwrap(), chunking_type),
-                    SingleModuleGraphBuilderNode::Issues { .. } => unreachable!(),
-                });
+                } else {
+                    None
+                };
 
                 match current {
                     SingleModuleGraphBuilderNode::Module {
@@ -341,16 +356,35 @@ impl SingleModuleGraph {
                             idx
                         };
                         // Add the edge
-                        if let Some((parent_idx, chunking_type)) = parent_edge {
-                            graph.add_edge(parent_idx, current_idx, chunking_type);
+                        if let Some(parent_idx) = parent {
+                            graph.add_edge(parent_idx, current_idx, COMMON_CHUNKING_TYPE);
                         }
                     }
-                    SingleModuleGraphBuilderNode::ChunkableReference { .. } => {
-                        // Ignore. They are handled when visiting the next edge
-                        // (ChunkableReference -> Module)
+                    SingleModuleGraphBuilderNode::ChunkableReference {
+                        target,
+                        target_layer,
+                        chunking_type,
+                        ..
+                    } => {
+                        // Handle them  right now, because there might not be a child module if it
+                        // was already visited in `visited_modules`.
+                        // Find the target node, if it was already added
+                        let target_idx = if let Some(target_idx) = modules.get(&target) {
+                            *target_idx
+                        } else {
+                            let idx = graph.add_node(SingleModuleGraphNode {
+                                module: target,
+                                issues: Default::default(),
+                                layer: target_layer,
+                            });
+                            modules.insert(target, idx);
+                            idx
+                        };
+                        let parent_idx = parent.unwrap();
+                        graph.add_edge(parent_idx, target_idx, chunking_type);
                     }
                     SingleModuleGraphBuilderNode::Issues(new_issues) => {
-                        let (parent_idx, _) = parent_edge.unwrap();
+                        let parent_idx = parent.unwrap();
                         graph
                             .node_weight_mut(parent_idx)
                             .unwrap()
@@ -469,6 +503,45 @@ impl SingleModuleGraph {
         Ok(())
     }
 
+    /// Traverses all edges exactly once and calls the visitor with the edge source and
+    /// target.
+    ///
+    /// This means that target nodes can be revisited (once per incoming edge).
+    pub fn traverse_edges<'a>(
+        &'a self,
+        mut visitor: impl FnMut(
+            (
+                Option<(&'a SingleModuleGraphNode, &'a ChunkingType)>,
+                &'a SingleModuleGraphNode,
+            ),
+        ) -> GraphTraversalAction,
+    ) -> Result<()> {
+        let graph = &self.graph;
+        let mut stack = self.entries.values().copied().collect::<Vec<_>>();
+        let mut discovered = graph.visit_map();
+        for entry_node in self.entries.values() {
+            let entry_weight = graph.node_weight(*entry_node).unwrap();
+            visitor((None, entry_weight));
+        }
+
+        while let Some(node) = stack.pop() {
+            let node_weight = graph.node_weight(node).unwrap();
+            if discovered.visit(node) {
+                for edge in graph.edges(node).collect::<Vec<_>>() {
+                    let edge_weight = edge.weight();
+                    let succ = edge.target();
+                    let succ_weight = graph.node_weight(succ).unwrap();
+                    let action = visitor((Some((node_weight, edge_weight)), succ_weight));
+                    if !discovered.is_visited(&succ) && action == GraphTraversalAction::Continue {
+                        stack.push(succ);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Traverses all reachable edges in topological order. The preorder visitor can be used to
     /// forward state down the graph, and to skip subgraphs
     ///
@@ -546,9 +619,17 @@ impl SingleModuleGraph {
         SingleModuleGraph::new_inner(None, &*entries.await?, &Default::default()).await
     }
 
-    /// `root` is connected to the entries and include in `self.entries`.
     #[turbo_tasks::function]
     async fn new_with_entries_visited(
+        entries: Vc<Modules>,
+        visited_modules: Vc<ModuleSet>,
+    ) -> Result<Vc<Self>> {
+        SingleModuleGraph::new_inner(None, &*entries.await?, &*visited_modules.await?).await
+    }
+
+    /// `root` is connected to the entries and include in `self.entries`.
+    #[turbo_tasks::function]
+    async fn new_with_entries_visited_root(
         root: ResolvedVc<Box<dyn Module>>,
         // This must not be a Vc<Vec<_>> to ensure layout segment optimization hits the cache
         entries: Vec<ResolvedVc<Box<dyn Module>>>,
@@ -571,7 +652,7 @@ async fn get_module_graph_for_endpoint(
     let mut graphs = vec![];
 
     let mut visited_modules = if !server_utils.is_empty() {
-        let graph = SingleModuleGraph::new_with_entries_visited(
+        let graph = SingleModuleGraph::new_with_entries_visited_root(
             *entry,
             server_utils.iter().map(|m| **m).collect(),
             Vc::cell(Default::default()),
@@ -590,7 +671,7 @@ async fn get_module_graph_for_endpoint(
 
     // ast-grep-ignore: to-resolved-in-loop
     for module in server_component_entries.iter() {
-        let graph = SingleModuleGraph::new_with_entries_visited(
+        let graph = SingleModuleGraph::new_with_entries_visited_root(
             *entry,
             vec![Vc::upcast(**module)],
             Vc::cell(visited_modules.clone()),
@@ -608,7 +689,7 @@ async fn get_module_graph_for_endpoint(
 
     // Any previous iteration above would have added the entry node, but not actually visited it.
     visited_modules.remove(&entry);
-    let graph = SingleModuleGraph::new_with_entries_visited(
+    let graph = SingleModuleGraph::new_with_entries_visited_root(
         *entry,
         vec![*entry],
         Vc::cell(visited_modules.clone()),
@@ -618,6 +699,33 @@ async fn get_module_graph_for_endpoint(
     graphs.push(graph);
 
     Ok(Vc::cell(graphs))
+}
+
+#[turbo_tasks::function]
+async fn get_module_graph_for_project(project: ResolvedVc<Project>) -> Vc<SingleModuleGraph> {
+    SingleModuleGraph::new_with_entries(project.get_all_entries())
+}
+
+#[turbo_tasks::function]
+async fn get_additional_module_graph_for_project(
+    project: ResolvedVc<Project>,
+    graph: Vc<SingleModuleGraph>,
+) -> Result<Vc<SingleModuleGraph>> {
+    let visited_modules: HashSet<_> = graph.await?.iter_nodes().map(|n| n.module).collect();
+    let entries = project.get_all_entries().await?;
+    let additional_entries = project
+        .get_all_additional_entries(ReducedGraphs::new(vec![graph], false))
+        .await?;
+    let collect = entries
+        .iter()
+        .copied()
+        .chain(additional_entries.iter().copied())
+        .collect();
+
+    Ok(SingleModuleGraph::new_with_entries_visited(
+        Vc::cell(collect),
+        Vc::cell(visited_modules),
+    ))
 }
 
 #[turbo_tasks::value]
@@ -982,6 +1090,52 @@ pub struct ReducedGraphs {
 
 #[turbo_tasks::value_impl]
 impl ReducedGraphs {
+    #[turbo_tasks::function]
+    async fn new(graphs: Vec<Vc<SingleModuleGraph>>, is_single_page: bool) -> Result<Vc<Self>> {
+        let next_dynamic = async {
+            graphs
+                .iter()
+                .map(|graph| {
+                    NextDynamicGraph::new_with_entries(*graph, is_single_page).to_resolved()
+                })
+                .try_join()
+                .await
+        }
+        .instrument(tracing::info_span!("generating next/dynamic graphs"))
+        .await?;
+
+        let server_actions = async {
+            graphs
+                .iter()
+                .map(|graph| {
+                    ServerActionsGraph::new_with_entries(*graph, is_single_page).to_resolved()
+                })
+                .try_join()
+                .await
+        }
+        .instrument(tracing::info_span!("generating server actions graphs"))
+        .await?;
+
+        let client_references = async {
+            graphs
+                .iter()
+                .map(|graph| {
+                    ClientReferencesGraph::new_with_entries(*graph, is_single_page).to_resolved()
+                })
+                .try_join()
+                .await
+        }
+        .instrument(tracing::info_span!("generating client references graphs"))
+        .await?;
+
+        Ok(Self {
+            next_dynamic,
+            server_actions,
+            client_references,
+        }
+        .cell())
+    }
+
     /// Returns the next/dynamic-ally imported (client) modules (from RSC and SSR modules) for the
     /// given endpoint.
     #[turbo_tasks::function]
@@ -1109,62 +1263,21 @@ async fn get_reduced_graphs_for_endpoint_inner(
             async move { get_module_graph_for_endpoint(*entry).await }
                 .instrument(tracing::info_span!("module graph for endpoint"))
                 .await?
-                .clone_value(),
+                .iter()
+                .map(|v| **v)
+                .collect(),
         ),
         NextMode::Build => (
             false,
             vec![
-                async move {
-                    SingleModuleGraph::new_with_entries(project.get_all_entries())
-                        .to_resolved()
-                        .await
-                }
-                .instrument(tracing::info_span!("module graph for app"))
-                .await?,
+                async move { get_module_graph_for_project(project).resolve().await }
+                    .instrument(tracing::info_span!("module graph for app"))
+                    .await?,
             ],
         ),
     };
 
-    let next_dynamic = async {
-        graphs
-            .iter()
-            .map(|graph| NextDynamicGraph::new_with_entries(**graph, is_single_page).to_resolved())
-            .try_join()
-            .await
-    }
-    .instrument(tracing::info_span!("generating next/dynamic graphs"))
-    .await?;
-
-    let server_actions = async {
-        graphs
-            .iter()
-            .map(|graph| {
-                ServerActionsGraph::new_with_entries(**graph, is_single_page).to_resolved()
-            })
-            .try_join()
-            .await
-    }
-    .instrument(tracing::info_span!("generating server actions graphs"))
-    .await?;
-
-    let client_references = async {
-        graphs
-            .iter()
-            .map(|graph| {
-                ClientReferencesGraph::new_with_entries(**graph, is_single_page).to_resolved()
-            })
-            .try_join()
-            .await
-    }
-    .instrument(tracing::info_span!("generating client references graphs"))
-    .await?;
-
-    Ok(ReducedGraphs {
-        next_dynamic,
-        server_actions,
-        client_references,
-    }
-    .cell())
+    Ok(ReducedGraphs::new(graphs, is_single_page))
 }
 
 /// Generates a [ReducedGraph] for the given project and endpoint containing information that is
@@ -1183,4 +1296,59 @@ pub async fn get_reduced_graphs_for_endpoint(
         let _issues = result.take_collectibles::<Box<dyn Issue>>();
     }
     Ok(result)
+}
+
+#[turbo_tasks::function]
+pub async fn get_global_module_id_strategy(
+    project: Vc<Project>,
+) -> Result<Vc<GlobalModuleIdStrategy>> {
+    let graph_op = get_module_graph_for_project(project);
+    // TODO get rid of this once everything inside calls `take_collectibles()` when needed
+    let graph = graph_op.strongly_consistent().await?;
+    let _ = graph_op.take_collectibles::<Box<dyn Issue>>();
+
+    let additional_graph_op = get_additional_module_graph_for_project(project, graph_op);
+    // TODO get rid of this once everything inside calls `take_collectibles()` when needed
+    let additional_graph = additional_graph_op.strongly_consistent().await?;
+    let _ = additional_graph_op.take_collectibles::<Box<dyn Issue>>();
+
+    let graphs = [graph, additional_graph];
+
+    let mut idents: Vec<_> = graphs
+        .iter()
+        .flat_map(|graph| graph.iter_nodes())
+        .map(|node| node.module.ident())
+        .collect();
+
+    for graph in graphs.iter() {
+        // Additionally, add all the modules that are inserted by chunking (i.e. async loaders)
+        graph.traverse_edges(|(parent, current)| {
+            if let Some((_, &ChunkingType::Async)) = parent {
+                idents.push(
+                    current
+                        .module
+                        .ident()
+                        .with_modifier(async_loader_modifier()),
+                );
+            }
+            GraphTraversalAction::Continue
+        })?;
+    }
+
+    let module_id_map = idents
+        .into_iter()
+        .map(|ident| ident.to_string())
+        .try_join()
+        .await?
+        .iter()
+        .map(|module_ident| {
+            let ident_str = module_ident.clone_value();
+            let hash = hash_xxh3_hash64(&ident_str);
+            (ident_str, hash)
+        })
+        .collect();
+
+    let module_id_map = merge_preprocessed_module_ids(&module_id_map).await?;
+
+    GlobalModuleIdStrategy::new(module_id_map).await
 }
