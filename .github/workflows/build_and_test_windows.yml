@@ -115,10 +115,8 @@ jobs:
       - name: Build
         run: pnpm build
 
-      - name: Install Playwright Dependencies
-        run: |
-          pnpm playwright install-deps
-          pnpm playwright install chromium
+      - name: Install Chromium
+        run: pnpm playwright install chromium
 
       - name: Run Tests
         # Only run selected tests on Windows.
