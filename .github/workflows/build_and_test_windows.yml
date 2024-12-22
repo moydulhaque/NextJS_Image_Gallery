@@ -40,6 +40,16 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
+      - name: normalize versions
+        run: node scripts/normalize-version-bump.js
+
+      - name: Cache on ${{ github.ref_name }}
+        uses: ijjk/rust-cache@turbo-cache-v1.0.8
+        with:
+          save-if: 'true'
+          cache-provider: 'turbo'
+          shared-key: build-x86_64-pc-windows-msvc-${{ hashFiles('.cargo/config.toml') }}
+
       - name: Clear native build
         run: Remove-Item packages/next-swc/native -Recurse -Force -ErrorAction SilentlyContinue
 
