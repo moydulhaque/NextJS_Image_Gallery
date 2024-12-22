@@ -118,7 +118,7 @@ jobs:
 
       - name: Run Tests
         # Only run selected tests on Windows.
-        run: node run-tests.js -c 1 --debug test/e2e/app-dir/server-source-maps/server-source-maps.test.ts
+        run: node run-tests.js -c 1 --debug test/e2e/app-dir/app/index.test.ts
         env:
           TURBOPACK: 1
           TURBOPACK_DEV: 1
