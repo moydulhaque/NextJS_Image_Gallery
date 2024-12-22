@@ -15,17 +15,55 @@ env:
   TURBO_REMOTE_ONLY: 'true'
 
 jobs:
+  optimize-ci:
+    uses: ./.github/workflows/graphite_ci_optimizer.yml
+    secrets: inherit
+
+  changes:
+    name: Determine changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 25
+
+      - name: check for docs only change
+        id: docs-change
+        run: |
+          echo "DOCS_ONLY<<EOF" >> $GITHUB_OUTPUT;
+          echo "$(node scripts/run-for-change.js --not --type docs --exec echo 'false')" >> $GITHUB_OUTPUT;
+          echo 'EOF' >> $GITHUB_OUTPUT
+
+      - name: check for release
+        id: is-release
+        run: |
+          if [[ $(node ./scripts/check-is-release.js 2> /dev/null || :) = v* ]];
+            then
+              echo "IS_RELEASE=true" >> $GITHUB_OUTPUT
+            else
+              echo "IS_RELEASE=false" >> $GITHUB_OUTPUT
+          fi
+
+    outputs:
+      docs-only: ${{ steps.docs-change.outputs.DOCS_ONLY != 'false' }}
+      is-release: ${{ steps.is-release.outputs.IS_RELEASE == 'true' }}
+
   build-native:
     name: build-native
+    needs: ['optimize-ci', 'changes']
+    if: ${{ needs.optimize-ci.outputs.skip == 'false' && needs.changes.outputs.docs-only == 'false' }}
+
     runs-on:
       - 'self-hosted'
       - 'windows'
       - 'x64'
-    timeout-minutes: 45
+
     steps:
-      # we use checkout here instead of the build cache since
-      # it can fail to restore in different OS'
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 25
 
       - name: Setup node
         uses: actions/setup-node@v4
@@ -34,20 +72,20 @@ jobs:
           check-latest: true
       - run: corepack enable
 
-      # we always want to run this to set environment variables
       - name: Install Rust
         uses: ./.github/actions/setup-rust
         with:
           targets: x86_64-pc-windows-msvc
 
-      - name: normalize versions
-        run: node scripts/normalize-version-bump.js
+      # normalize versions before build-native for better cache hits
+      - run: node scripts/normalize-version-bump.js
+        name: normalize versions
 
       - name: Cache on ${{ github.ref_name }}
         uses: ijjk/rust-cache@turbo-cache-v1.0.8
         with:
-          save-if: 'true'
           cache-provider: 'turbo'
+          save-if: 'false'
           shared-key: build-x86_64-pc-windows-msvc-${{ hashFiles('.cargo/config.toml') }}
 
       - name: Clear native build
@@ -60,3 +98,49 @@ jobs:
           corepack enable
           npm i -g "@napi-rs/cli@${NAPI_CLI_VERSION}" "turbo@${TURBO_VERSION}"
           turbo run build-native-release -vvv --env-mode loose --remote-cache-timeout 90 --summarize -- -- --target x86_64-pc-windows-msvc
+
+      # undo normalize version changes
+      - run: git checkout .
+
+  test-turbopack-dev:
+    name: test-turbopack-dev
+    needs: ['optimize-ci', 'changes', 'build-native']
+    if: ${{ needs.optimize-ci.outputs.skip == 'false' && needs.changes.outputs.docs-only == 'false' }}
+
+    runs-on:
+      - 'self-hosted'
+      - 'windows'
+      - 'x64'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 25
+
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_LTS_VERSION }}
+          check-latest: true
+
+      - run: corepack enable
+
+      - name: Install
+        run: pnpm install
+
+      - name: Build
+        run: pnpm build
+
+      - name: Install Playwright Dependencies
+        run: |
+          pnpm playwright install-deps
+          pnpm playwright install chromium
+
+      - name: Run Tests
+        # Only run selected tests on Windows.
+        run: node run-tests.js -c 1 --debug test/e2e/app-dir/server-source-maps/server-source-maps.test.ts
+        env:
+          TURBOPACK: 1
+          TURBOPACK_DEV: 1
+          NEXT_E2E_TEST_TIMEOUT: 240000
+          NEXT_TEST_MODE: dev
