@@ -122,7 +122,7 @@ jobs:
         # Only run selected tests on Windows.
         run: node run-tests.js -c 1 --debug test/e2e/app-dir/app/index.test.ts
         env:
-          TURBOPACK: 1
-          TURBOPACK_DEV: 1
+          # TURBOPACK: 1
+          # TURBOPACK_DEV: 1
           NEXT_E2E_TEST_TIMEOUT: 240000
           NEXT_TEST_MODE: dev
