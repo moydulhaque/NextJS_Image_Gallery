@@ -73,12 +73,19 @@ jobs:
         with:
           node-version: ${{ env.NODE_LTS_VERSION }}
           check-latest: true
-      - run: corepack enable
+
+      - name: Install global dependencies
+        run: |
+          corepack enable
+          npm i -g "turbo@${TURBO_VERSION}" "@napi-rs/cli@${NAPI_CLI_VERSION}"
 
       - name: Install Rust
         uses: ./.github/actions/setup-rust
         with:
           targets: x86_64-pc-windows-msvc
+
+      - name: Print Rust version
+        run: rustc --version
 
       # normalize versions before build-native for better cache hits
       - run: node scripts/normalize-version-bump.js
@@ -97,10 +104,7 @@ jobs:
       - name: Build native
         # --env-mode loose is a breaking change required with turbo 2.x since Strict mode is now the default
         # TODO: we should add the relevant envs later to to switch to strict mode
-        run: |
-          corepack enable
-          npm i -g "@napi-rs/cli@${NAPI_CLI_VERSION}" "turbo@${TURBO_VERSION}"
-          turbo run build-native-release -vvv --env-mode loose --remote-cache-timeout 90 --summarize -- -- --target x86_64-pc-windows-msvc
+        run: turbo run build-native-release -vvv --env-mode loose --remote-cache-timeout 90 --summarize -- -- --target x86_64-pc-windows-msvc
 
       # undo normalize version changes
       - run: git checkout .
