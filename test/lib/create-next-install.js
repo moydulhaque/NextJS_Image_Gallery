@@ -23,12 +23,6 @@ async function installDependencies(cwd, tmpDir) {
     args.push('--prefer-offline')
   }
 
-  await execa('pnpm', ['--version'], {
-    cwd,
-    stdio: ['ignore', 'inherit', 'inherit'],
-    env: process.env,
-  })
-
   await execa('pnpm', args, {
     cwd,
     stdio: ['ignore', 'inherit', 'inherit'],
@@ -135,8 +129,6 @@ async function createNextInstall({
           return prev
         }, {}),
       }
-
-      console.log('combinedDependencies', combinedDependencies)
 
       const scripts = {
         debug: `NEXT_PRIVATE_SKIP_CANARY_CHECK=1 NEXT_TELEMETRY_DISABLED=1 NEXT_TEST_NATIVE_DIR=${process.env.NEXT_TEST_NATIVE_DIR} node --inspect --trace-deprecation --enable-source-maps node_modules/next/dist/bin/next`,

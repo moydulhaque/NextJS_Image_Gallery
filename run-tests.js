@@ -420,9 +420,6 @@ ${ENDGROUP}`)
         'react-dom': reactVersion,
       },
       keepRepoDir: true,
-      packageJson: {
-        packageManager: require('./package.json').packageManager,
-      },
     })
 
     const serializedPkgPaths = []
