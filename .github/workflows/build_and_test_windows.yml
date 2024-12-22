@@ -126,5 +126,3 @@ jobs:
           TURBOPACK_DEV: 1
           NEXT_E2E_TEST_TIMEOUT: 240000
           NEXT_TEST_MODE: dev
-          # Skip isolation for now to avoid `Next.js package not found` error.
-          NEXT_SKIP_ISOLATE: true
