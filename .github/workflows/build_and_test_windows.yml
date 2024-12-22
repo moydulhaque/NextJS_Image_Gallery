@@ -50,8 +50,8 @@ jobs:
       docs-only: ${{ steps.docs-change.outputs.DOCS_ONLY != 'false' }}
       is-release: ${{ steps.is-release.outputs.IS_RELEASE == 'true' }}
 
-  build-native:
-    name: build-native
+  test-turbopack-dev:
+    name: test-turbopack-dev
     needs: ['optimize-ci', 'changes']
     if: ${{ needs.optimize-ci.outputs.skip == 'false' && needs.changes.outputs.docs-only == 'false' }}
 
@@ -101,29 +101,6 @@ jobs:
 
       # undo normalize version changes
       - run: git checkout .
-
-  test-turbopack-dev:
-    name: test-turbopack-dev
-    needs: ['optimize-ci', 'changes', 'build-native']
-    if: ${{ needs.optimize-ci.outputs.skip == 'false' && needs.changes.outputs.docs-only == 'false' }}
-
-    runs-on:
-      - 'self-hosted'
-      - 'windows'
-      - 'x64'
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 25
-
-      - name: Setup node
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_LTS_VERSION }}
-          check-latest: true
-
-      - run: corepack enable
 
       - name: Install
         run: pnpm install
