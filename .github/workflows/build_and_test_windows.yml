@@ -94,7 +94,7 @@ jobs:
       - name: Clear native build
         run: Remove-Item packages/next-swc/native -Recurse -Force -ErrorAction SilentlyContinue
 
-      - name: 'Build'
+      - name: Build native
         # --env-mode loose is a breaking change required with turbo 2.x since Strict mode is now the default
         # TODO: we should add the relevant envs later to to switch to strict mode
         run: |
