@@ -1012,6 +1012,8 @@ async fn insert_next_shared_aliases(
 
 #[turbo_tasks::function]
 pub async fn get_next_package(context_directory: Vc<FileSystemPath>) -> Result<Vc<FileSystemPath>> {
+    dbg!(context_directory.await?);
+    dbg!(context_directory.root().await?);
     let result = resolve(
         context_directory,
         Value::new(ReferenceType::CommonJs(CommonJsReferenceSubType::Undefined)),
