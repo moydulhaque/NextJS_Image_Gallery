@@ -1,4 +1,4 @@
-import type { IncomingHttpHeaders, OutgoingHttpHeaders } from 'http'
+import type { IncomingHttpHeaders, OutgoingHttpHeaders } from 'node:http'
 import type { SizeLimit } from '../../types'
 import type { RequestStore } from '../app-render/work-unit-async-storage.external'
 import type { AppRenderContext, GenerateFlight } from './app-render'
@@ -399,6 +399,28 @@ function limitUntrustedHeaderValueForLogs(value: string) {
   return value.length > 100 ? value.slice(0, 100) + '...' : value
 }
 
+export function parseHostHeader(headers: IncomingHttpHeaders) {
+  const forwardedHostHeader = headers['x-forwarded-host']
+  const forwardedHostHeaderValue =
+    forwardedHostHeader && Array.isArray(forwardedHostHeader)
+      ? forwardedHostHeader[0]
+      : forwardedHostHeader?.split(',')?.[0]?.trim()
+  const hostHeader = headers['host']
+  const host = forwardedHostHeaderValue
+    ? {
+        type: HostType.XForwardedHost,
+        value: forwardedHostHeaderValue,
+      }
+    : hostHeader
+      ? {
+          type: HostType.Host,
+          value: hostHeader,
+        }
+      : undefined
+
+  return host
+}
+
 type ServerModuleMap = Record<
   string,
   {
@@ -487,22 +509,7 @@ export async function handleAction({
     typeof req.headers['origin'] === 'string'
       ? new URL(req.headers['origin']).host
       : undefined
-
-  const forwardedHostHeader = req.headers['x-forwarded-host'] as
-    | string
-    | undefined
-  const hostHeader = req.headers['host']
-  const host: Host = forwardedHostHeader
-    ? {
-        type: HostType.XForwardedHost,
-        value: forwardedHostHeader,
-      }
-    : hostHeader
-      ? {
-          type: HostType.Host,
-          value: hostHeader,
-        }
-      : undefined
+  const host = parseHostHeader(req.headers)
 
   let warning: string | undefined = undefined
 
@@ -517,7 +524,10 @@ export async function handleAction({
     // This might be an old browser that doesn't send `host` header. We ignore
     // this case.
     warning = 'Missing `origin` header from a forwarded Server Actions request.'
-  } else if (!host || originDomain !== host.value) {
+  } else if (
+    !host ||
+    new RegExp('^' + host.value + '(.?)$').test(originDomain)
+  ) {
     // If the customer sets a list of allowed origins, we'll allow the request.
     // These are considered safe but might be different from forwarded host set
     // by the infra (i.e. reverse proxies).
