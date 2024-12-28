@@ -471,7 +471,7 @@ fn react_server_components_typescript(input: PathBuf) {
         Syntax::Typescript(Default::default()),
         &|tr| {
             server_components(
-                FileName::Real(PathBuf::from("/some-project/src/some-file.js")).into(),
+                FileName::Real(PathBuf::from("/some-project/src/app/some-file.js")).into(),
                 Config::WithOptions(Options {
                     is_react_server_layer: true,
                     dynamic_io_enabled: false,
@@ -497,7 +497,7 @@ fn react_server_components_server_graph_fixture(input: PathBuf) {
         syntax(),
         &|tr| {
             server_components(
-                FileName::Real(PathBuf::from("/some-project/src/some-file.js")).into(),
+                FileName::Real(PathBuf::from("/some-project/src/app/some-file.js")).into(),
                 Config::WithOptions(Options {
                     is_react_server_layer: true,
                     dynamic_io_enabled: false,
@@ -523,7 +523,7 @@ fn react_server_components_client_graph_fixture(input: PathBuf) {
         syntax(),
         &|tr| {
             server_components(
-                FileName::Real(PathBuf::from("/some-project/src/some-file.js")).into(),
+                FileName::Real(PathBuf::from("/some-project/src/app/some-file.js")).into(),
                 Config::WithOptions(Options {
                     is_react_server_layer: false,
                     dynamic_io_enabled: false,
