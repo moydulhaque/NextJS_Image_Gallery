@@ -78,6 +78,55 @@ describe('segment cache (incremental opt in)', () => {
     it('page with PPR disabled, and has a loading boundary', () =>
       testPrefetchDeduping('/ppr-disabled-with-loading-boundary'))
   })
+
+  it(
+    'prefetches a shared layout on a PPR-enabled route that was previously ' +
+      'omitted from a non-PPR-enabled route',
+    async () => {
+      const interceptor = createRequestInterceptor()
+      const browser = await next.browser('/mixed-fetch-strategies', {
+        beforePageLoad(page: Playwright.Page) {
+          page.route('**/*', async (route: Playwright.Route) => {
+            await interceptor.interceptRoute(page, route)
+          })
+        },
+      })
+
+      const navigationsLock = interceptor.lockNavigations()
+
+      // Initiate a prefetch for the PPR-disabled route first. This will not
+      // include the /shared-layout/ segment, because it's inside the
+      // loading boundary.
+      await interceptor.waitForPrefetches(async () => {
+        const checkbox = await browser.elementByCss(
+          `input[data-link-accordion="/mixed-fetch-strategies/has-loading-boundary/shared-layout/ppr-disabled"]`
+        )
+        await checkbox.click()
+      })
+
+      // Then initiate a prefetch for the PPR-enabled route. This prefetch
+      // should include the /shared-layout/ segment despite the presence of
+      // the loading boundary, and despite the earlier non-PPR attempt
+      await interceptor.waitForPrefetches(async () => {
+        const checkbox = await browser.elementByCss(
+          `input[data-link-accordion="/mixed-fetch-strategies/has-loading-boundary/shared-layout/ppr-enabled"]`
+        )
+        await checkbox.click()
+      })
+
+      // Navigate to the PPR-enabled route
+      const link = await browser.elementByCss(
+        "a[href='/mixed-fetch-strategies/has-loading-boundary/shared-layout/ppr-enabled']"
+      )
+      await link.click()
+
+      // If we prefetched all the segments correctly, we should be able to
+      // reveal the page's loading state.
+      await browser.elementById('page-loading-boundary')
+
+      await navigationsLock.release()
+    }
+  )
 })
 
 function createRequestInterceptor() {
@@ -88,6 +137,8 @@ function createRequestInterceptor() {
   // their type (prefetch requests, navigation requests).
   let prefetchesPromise: PromiseWithResolvers<void> = null
   let lastPrefetchRequest: Playwright.Request | null = null
+
+  let pendingNavigations: Set<Playwright.Route> | null = null
 
   async function checkPrefetch(route: Playwright.Route): Promise<{
     href: string
@@ -111,6 +162,26 @@ function createRequestInterceptor() {
 
   return {
     checkPrefetch,
+
+    lockNavigations() {
+      if (pendingNavigations !== null) {
+        throw new Error('Navigations are already locked')
+      }
+      pendingNavigations = new Set()
+      return {
+        async release() {
+          if (pendingNavigations === null) {
+            throw new Error('This lock was already released')
+          }
+          const routes = pendingNavigations
+          pendingNavigations = null
+          for (const route of routes) {
+            route.continue()
+          }
+          return routes
+        },
+      }
+    },
 
     /**
      * Waits for the next for the next prefetch request, then keeps waiting
@@ -186,6 +257,10 @@ function createRequestInterceptor() {
           }
         } else {
           // This is a navigation request.
+          if (pendingNavigations !== null) {
+            pendingNavigations.add(route)
+            return
+          }
         }
       }
 

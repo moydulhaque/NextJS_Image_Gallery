@@ -1,0 +1,27 @@
+import { LinkAccordion } from '../link-accordion'
+
+export default function MixedFetchStrategies() {
+  return (
+    <>
+      <p>
+        This page tests what happens when a shared layout belongs to both a
+        PPR-enabled route and a non-PPR enabled route. The layout data should be
+        omitted when prefetching the non-PPR enabled route, because it's inside
+        another layout that has a loading boundary. But it should be included
+        when prefetching the route that has PPR enabled.
+      </p>
+      <ul>
+        <li>
+          <LinkAccordion href="/mixed-fetch-strategies/has-loading-boundary/shared-layout/ppr-enabled">
+            Link to PPR enabled page
+          </LinkAccordion>
+        </li>
+        <li>
+          <LinkAccordion href="/mixed-fetch-strategies/has-loading-boundary/shared-layout/ppr-disabled">
+            Link to PPR disabled page
+          </LinkAccordion>
+        </li>
+      </ul>
+    </>
+  )
+}
