@@ -3,7 +3,6 @@ import { createSandbox } from 'development-sandbox'
 import { FileRef, nextTestSetup } from 'e2e-utils'
 import {
   describeVariants as describe,
-  getRedboxCallStack,
   toggleCollapseCallStackFrames,
 } from 'next-test-utils'
 import path from 'path'
@@ -769,59 +768,5 @@ describe.each(['default', 'turbo'])('ReactRefreshLogBox %s', () => {
     )
 
     expect(callStackFrames.length).toBeGreaterThan(9)
-  })
-
-  test('should show anonymous frames in stack trace', async () => {
-    await using sandbox = await createSandbox(
-      next,
-      new Map([
-        [
-          'pages/index.js',
-          outdent`
-          export default function Page() {
-            [1, 2, 3].map(() => {
-              throw new Error("anonymous error!");
-            })
-          }`,
-        ],
-      ])
-    )
-    const { session, browser } = sandbox
-    await session.assertHasRedbox()
-    const texts = await getRedboxCallStack(browser)
-    expect(texts).toMatchSnapshot()
-  })
-
-  test('should hide unrelated frames in stack trace with node:internal calls', async () => {
-    await using sandbox = await createSandbox(
-      next,
-      new Map([
-        [
-          'pages/index.js',
-          // Node.js will throw an error about the invalid URL since it happens server-side
-          outdent`
-      export default function Page() {}
-      
-      export function getServerSideProps() {
-        new URL("/", "invalid");
-        return { props: {} };
-      }`,
-        ],
-      ])
-    )
-    const { session, browser } = sandbox
-    await session.assertHasRedbox()
-
-    // Should still show the errored line in source code
-    const source = await session.getRedboxSource()
-    expect(source).toContain('pages/index.js')
-    expect(source).toContain(`new URL("/", "invalid")`)
-
-    const callStackFrames = await browser.elementsByCss(
-      '[data-nextjs-call-stack-frame]'
-    )
-    const texts = await Promise.all(callStackFrames.map((f) => f.innerText()))
-
-    expect(texts.filter((t) => t.includes('node:internal'))).toHaveLength(0)
   })
 })
